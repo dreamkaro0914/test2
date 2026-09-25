@@ -211,8 +211,43 @@ _PREVIEW_BOT_TOKENS = ('facebookexternalhit', 'twitterbot', 'slackbot', 'discord
 _BOT_WORD_RE = re.compile(r'\b(bot|crawler|spider|slurp|preview)\b')
 
 
+# ブラウザ名 → バージョン抽出用の正規表現（メジャー番号のみ）
+_BROWSER_VER = {
+    'Edge': r'edg/(\d+)',
+    'Firefox': r'(?:firefox|fxios)/(\d+)',
+    'Chrome': r'(?:crios|chromium|chrome)/(\d+)',
+    'Safari': r'version/(\d+)',
+}
+# Windows は UA のカーネル番号（NT x.y）でしか分からない。NT 10.0 は 10 と 11 の両方。
+_WIN_NT = {'10.0': '10/11', '6.3': '8.1', '6.2': '8', '6.1': '7', '6.0': 'Vista'}
+
+
+def _detect_os(low):
+    """小文字化した UA から「OS名 バージョン」を返す（バージョン不明なら名前のみ）"""
+    if 'windows nt' in low:
+        m = re.search(r'windows nt ([\d.]+)', low)
+        ver = _WIN_NT.get(m.group(1), m.group(1)) if m else ''
+        return f'Windows {ver}'.strip()
+    if 'iphone' in low:
+        m = re.search(r'os (\d+)[._](\d+)', low)
+        return f'iOS {m.group(1)}.{m.group(2)}' if m else 'iOS'
+    if 'ipad' in low:
+        m = re.search(r'os (\d+)[._](\d+)', low)
+        return f'iPadOS {m.group(1)}.{m.group(2)}' if m else 'iPadOS'
+    if 'android' in low:
+        m = re.search(r'android (\d+(?:\.\d+)?)', low)
+        return f'Android {m.group(1)}' if m else 'Android'
+    if 'mac os x' in low or 'macintosh' in low:
+        m = re.search(r'mac os x (\d+)[._](\d+)', low)
+        return f'macOS {m.group(1)}.{m.group(2)}' if m else 'macOS'
+    if 'linux' in low:
+        return 'Linux'
+    return '不明'
+
+
 def parse_ua(ua):
-    """User-Agent を「ブラウザ / OS」の短い表記にする。判別できなければ簡単なラベル。"""
+    """User-Agent を「ブラウザ バージョン / OS バージョン」の短い表記にする。
+    判別できなければ簡単なラベル。"""
     if not ua or ua == 'Unknown':
         return '不明'
     low = ua.lower()
@@ -228,21 +263,9 @@ def parse_ua(ua):
         browser = 'Safari'
     else:
         browser = 'その他'
-    if 'windows nt' in low:
-        os_name = 'Windows'
-    elif 'iphone' in low:
-        os_name = 'iPhone'
-    elif 'ipad' in low:
-        os_name = 'iPad'
-    elif 'android' in low:
-        os_name = 'Android'
-    elif 'mac os x' in low or 'macintosh' in low:
-        os_name = 'Mac'
-    elif 'linux' in low:
-        os_name = 'Linux'
-    else:
-        os_name = '不明'
-    return f'{browser} / {os_name}'
+    m = re.search(_BROWSER_VER[browser], low) if browser in _BROWSER_VER else None
+    browser_label = f'{browser} {m.group(1)}' if m else browser
+    return f'{browser_label} / {_detect_os(low)}'
 
 
 def maps_url(lat, lon):

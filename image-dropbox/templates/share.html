@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>共有された画像</title>
+    <style>
+        body { font-family: sans-serif; max-width: 900px; margin: 30px auto; padding: 0 16px; text-align: center; }
+        img { max-width: 100%; height: auto; border: 1px solid #ddd; }
+        .actions { margin: 16px 0; }
+        .actions a { display: inline-block; padding: 8px 16px; border: 1px solid #888; border-radius: 4px; text-decoration: none; color: #222; }
+        .note { font-size: 0.85em; color: #666; }
+    </style>
+</head>
+<body>
+    <h2>共有された画像</h2>
+    <img src="{{ url_for('share_image', token=token) }}" alt="共有された画像">
+    <div class="actions">
+        <a href="{{ url_for('share_image', token=token, dl=1) }}">画像を保存する</a>
+    </div>
+    <p class="note">このリンクは {{ expires }} まで有効です。リンクを知っている人は誰でも閲覧できるため、取り扱いにご注意ください。</p>
+</body>
+</html>

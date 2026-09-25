@@ -14,6 +14,8 @@
         .guest-badge { background: #fff3cd; color: #856404; padding: 2px 5px; border-radius: 3px; font-size: 0.8em; }
         .actions { display: flex; gap: 15px; align-items: center; margin-bottom: 20px; }
         .actions form { margin: 0; }
+        .share-form { display: flex; gap: 4px; margin: 0; }
+        .notice-ok { background: #d4edda; padding: 10px 14px; border-radius: 4px; }
         .ua { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     </style>
 </head>
@@ -27,10 +29,36 @@
         </form>
     </div>
 
+    <h3 id="shares">共有中のリンク（{{ shares|length }}件）</h3>
+    {% if new_token %}<p class="notice-ok">共有リンクを発行しました。下の一覧の「コピー」でURLをコピーし、相手に送ってください。</p>{% endif %}
+    {% if shares %}
+    <div class="table-wrap">
+    <table>
+        <tr><th>画像</th><th>共有URL</th><th>有効期限</th><th></th></tr>
+        {% for s in shares %}
+        <tr{% if s['token'] == new_token %} style="background:#fffbe6"{% endif %}>
+            <td>{{ s['original_name'] or s['filename'] }}</td>
+            <td><a href="{{ url_for('view_share', token=s['token']) }}" target="_blank" rel="noopener">{{ url_for('view_share', token=s['token']) }}</a>
+                <button type="button" class="copy-link" data-path="{{ url_for('view_share', token=s['token']) }}">コピー</button></td>
+            <td>{{ s['expires_local'] }} まで</td>
+            <td>
+                <form method="post" action="{{ url_for('revoke_share', token=s['token']) }}" class="share-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit">取り消し</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    </div>
+    {% else %}
+    <p><small>送信履歴の右端「発行」から、画像ごとに共有リンクを作れます。</small></p>
+    {% endif %}
+
     <h3>送信履歴・メタデータ一覧（全{{ total }}件）</h3>
     <div class="table-wrap">
     <table>
-        <tr><th>日時</th><th>送信元</th><th>送信者ID</th><th>ファイル</th><th>地域</th><th>機種(UA)</th><th>回線</th></tr>
+        <tr><th>日時</th><th>送信元</th><th>送信者ID</th><th>ファイル</th><th>地域</th><th>機種(UA)</th><th>回線</th><th>共有リンク発行</th></tr>
         {% for row in rows %}
         <tr>
             <td>{{ row['timestamp'] }}</td>
@@ -40,6 +68,14 @@
             <td>{{ row['region'] }}</td>
             <td class="ua" title="{{ row['ua'] }}"><small>{{ row['ua'] }}</small></td>
             <td><small>{{ row['network'] or 'N/A' }}</small></td>
+            <td>
+                <form class="share-form" method="post" action="{{ url_for('create_share') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="filename" value="{{ row['filename'] }}">
+                    <select name="days">{% for d in share_days %}<option value="{{ d }}"{% if d == 7 %} selected{% endif %}>{{ d }}日</option>{% endfor %}</select>
+                    <button type="submit">発行</button>
+                </form>
+            </td>
         </tr>
         {% endfor %}
     </table>
@@ -52,5 +88,6 @@
         {% if page < last_page %}<a href="{{ url_for('admin_dashboard', page=page + 1) }}">次へ &raquo;</a>{% endif %}
     </p>
     {% endif %}
+    <script src="{{ url_for('static', filename='admin.js') }}"></script>
 </body>
 </html>

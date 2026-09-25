@@ -79,6 +79,7 @@ ALLOWED_FORMATS = {'PNG': '.png', 'JPEG': '.jpg', 'GIF': '.gif', 'WEBP': '.webp'
 ALLOWED_EFFECTIVE_TYPES = {'slow-2g', '2g', '3g', '4g'}
 STORED_NAME_RE = re.compile(r'^(guest|host)_\d{14}_[0-9a-f]{32}\.(png|jpg|gif|webp)$')
 PAGE_SIZE = 100
+SHARE_DAYS = (1, 7, 30)  # 共有リンクの有効期限の選択肢（日）
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
@@ -104,6 +105,17 @@ def init_db():
                 network TEXT,
                 original_name TEXT,
                 filename TEXT NOT NULL
+            )
+        ''')
+
+
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS shares (
+                token TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0
             )
         ''')
 
@@ -258,8 +270,10 @@ def set_security_headers(response):
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
     )
-    if request.path.startswith('/admin'):
+    if request.path.startswith(('/admin', '/s/')):
         response.headers['Cache-Control'] = 'no-store'
+    if request.path.startswith('/s/'):
+        response.headers['X-Robots-Tag'] = 'noindex, nofollow'
     return response
 
 
@@ -339,8 +353,14 @@ def admin_dashboard():
             'FROM uploads ORDER BY id DESC LIMIT ? OFFSET ?',
             (PAGE_SIZE, (page - 1) * PAGE_SIZE),
         ).fetchall()
+        shares = conn.execute(
+            "SELECT s.token, s.filename, u.original_name, datetime(s.expires_at, 'localtime') AS expires_local "
+            'FROM shares s LEFT JOIN uploads u ON u.filename = s.filename '
+            "WHERE s.revoked = 0 AND s.expires_at > datetime('now') ORDER BY s.created_at DESC"
+        ).fetchall()
     last_page = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
-    return render_template('dashboard.html', rows=rows, page=page, last_page=last_page, total=total)
+    return render_template('dashboard.html', rows=rows, page=page, last_page=last_page, total=total,
+                           shares=shares, share_days=SHARE_DAYS, new_token=request.args.get('shared'))
 
 
 @app.route('/admin/upload', methods=['GET', 'POST'])
@@ -366,6 +386,67 @@ def download_file(filename):
     if not STORED_NAME_RE.match(filename):
         abort(404)
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+
+
+# ==============================
+# 共有リンク（ホストが選んだ画像を、リンクを知る人だけが閲覧できる）
+# ==============================
+
+@app.route('/admin/share', methods=['POST'])
+@admin_required
+def create_share():
+    filename = request.form.get('filename', '')
+    days = request.form.get('days', type=int)
+    if not STORED_NAME_RE.match(filename) or days not in SHARE_DAYS:
+        abort(400)
+    if not os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], filename)):
+        abort(404)
+    token = secrets.token_urlsafe(16)  # 128bit。推測できない
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO shares (token, filename, expires_at) VALUES (?, ?, datetime('now', ?))",
+            (token, filename, f'+{days} days'),
+        )
+    return redirect(url_for('admin_dashboard', shared=token) + '#shares')
+
+
+@app.route('/admin/share/<token>/revoke', methods=['POST'])
+@admin_required
+def revoke_share(token):
+    with db() as conn:
+        conn.execute('UPDATE shares SET revoked = 1 WHERE token = ?', (token,))
+    return redirect(url_for('admin_dashboard') + '#shares')
+
+
+def active_share(token):
+    """有効な（取り消されておらず期限内の）共有を返す。なければ 404"""
+    with db() as conn:
+        share = conn.execute(
+            "SELECT filename, datetime(expires_at, 'localtime') AS expires_local FROM shares "
+            "WHERE token = ? AND revoked = 0 AND expires_at > datetime('now')",
+            (token,),
+        ).fetchone()
+    if share is None or not os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], share['filename'])):
+        abort(404)
+    return share
+
+
+@app.route('/s/<token>')
+def view_share(token):
+    share = active_share(token)
+    return render_template('share.html', token=token, expires=share['expires_local'])
+
+
+@app.route('/s/<token>/image')
+def share_image(token):
+    share = active_share(token)
+    download = request.args.get('dl') == '1'
+    return send_from_directory(app.config['UPLOAD_FOLDER'], share['filename'], as_attachment=download)
+
+
+@app.errorhandler(404)
+def not_found(_e):
+    return 'ページが見つからないか、共有リンクの有効期限が切れています。', 404
 
 
 if __name__ == '__main__':

@@ -129,12 +129,16 @@ def init_db():
                 ua TEXT
             )
         ''')
-        # 既存DBへの列追加（地図リンク用のおおよその座標）
+        # 既存DBへの列追加（地図リンク用のおおよその座標）。
+        # 複数ワーカーが初回同時起動しても片方の ADD COLUMN が失敗して落ちないよう握りつぶす。
         for table in ('uploads', 'share_access'):
             existing = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
             for col in ('lat', 'lon'):
                 if col not in existing:
-                    conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} REAL')
+                    try:
+                        conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} REAL')
+                    except sqlite3.OperationalError:
+                        pass  # 別ワーカーが先に追加済み（duplicate column name）
 
 
 init_db()
@@ -199,10 +203,12 @@ def get_region_from_ip(ip_address):
     return geo_lookup(ip_address)['region']
 
 
-# リンクプレビュー用に自動アクセスしてくる bot 類（実際の閲覧者と区別するため）
-_PREVIEW_BOTS = ('bot', 'crawler', 'spider', 'slurp', 'facebookexternalhit', 'twitterbot',
-                 'slackbot', 'discordbot', 'skypeuripreview', 'whatsapp', 'line/', 'embedly',
-                 'preview', 'pinterest', 'telegrambot')
+# リンクプレビュー用に自動アクセスしてくる bot 類（実際の閲覧者と区別するため）。
+# 製品名は部分一致、一般語は単語境界で判定する（例: 'Cubot' 端末を bot と誤判定しないため）。
+_PREVIEW_BOT_TOKENS = ('facebookexternalhit', 'twitterbot', 'slackbot', 'discordbot', 'linkedinbot',
+                       'telegrambot', 'skypeuripreview', 'whatsapp', 'embedly', 'pinterest',
+                       'line/', 'googlebot', 'bingbot', 'applebot')
+_BOT_WORD_RE = re.compile(r'\b(bot|crawler|spider|slurp|preview)\b')
 
 
 def parse_ua(ua):
@@ -210,7 +216,7 @@ def parse_ua(ua):
     if not ua or ua == 'Unknown':
         return '不明'
     low = ua.lower()
-    if any(b in low for b in _PREVIEW_BOTS):
+    if any(t in low for t in _PREVIEW_BOT_TOKENS) or _BOT_WORD_RE.search(low):
         return 'リンクプレビュー/bot'
     if 'edg' in low:
         browser = 'Edge'

@@ -44,7 +44,7 @@
             <td>{{ s['expires_local'] }} まで</td>
             <td>{{ s['views'] }}回</td>
             <td>{{ s['downloads'] }}回</td>
-            <td><a href="{{ url_for('admin_dashboard', access_token=s['token']) }}#access">この画像</a></td>
+            <td><a href="{{ url_for('admin_dashboard', access_token=s['token']) }}#access">このリンク</a></td>
             <td>
                 <form method="post" action="{{ url_for('revoke_share', token=s['token']) }}" class="share-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -59,7 +59,7 @@
     <p><small>送信履歴の右端「発行」から、画像ごとに共有リンクを作れます。</small></p>
     {% endif %}
 
-    <h3 id="access">共有リンクの閲覧・保存履歴（最新{{ accesses|length }}件）{% if filter_name %} — 「{{ filter_name }}」のみ{% endif %}</h3>
+    <h3 id="access">共有リンクの閲覧・保存履歴（最新{{ accesses|length }}件）{% if filter_name %} — 「{{ filter_name }}」の共有リンク1件のみ{% endif %}</h3>
     {% if filter_name %}<p class="hint"><a href="{{ url_for('admin_dashboard') }}#access">&laquo; すべての履歴に戻る</a></p>{% endif %}
     {% if accesses %}
     <p class="hint">🗺 は登録上のおおよその地域の中心を指すもので、閲覧者の実際の所在地ではありません。</p>
@@ -85,6 +85,7 @@
     {% endif %}
 
     <h3>送信履歴・メタデータ一覧（全{{ total }}件）</h3>
+    <p class="hint">🗺 は登録上のおおよその地域の中心を指すもので、送信者の実際の所在地ではありません。</p>
     <div class="table-wrap">
     <table>
         <tr><th>日時</th><th>送信元</th><th>送信者ID</th><th>ファイル</th><th>地域</th><th>機種(UA)</th><th>回線</th><th>共有リンク発行</th></tr>
@@ -112,9 +113,9 @@
 
     {% if last_page > 1 %}
     <p>
-        {% if page > 1 %}<a href="{{ url_for('admin_dashboard', page=page - 1) }}">&laquo; 前へ</a>{% endif %}
+        {% if page > 1 %}<a href="{{ url_for('admin_dashboard', page=page - 1, access_token=access_token) }}">&laquo; 前へ</a>{% endif %}
         {{ page }} / {{ last_page }}
-        {% if page < last_page %}<a href="{{ url_for('admin_dashboard', page=page + 1) }}">次へ &raquo;</a>{% endif %}
+        {% if page < last_page %}<a href="{{ url_for('admin_dashboard', page=page + 1, access_token=access_token) }}">次へ &raquo;</a>{% endif %}
     </p>
     {% endif %}
     <script src="{{ url_for('static', filename='admin.js') }}"></script>

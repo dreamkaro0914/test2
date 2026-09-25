@@ -118,6 +118,17 @@ def init_db():
                 revoked INTEGER NOT NULL DEFAULT 0
             )
         ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS share_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (datetime('now', 'localtime')),
+                token TEXT NOT NULL,
+                action TEXT NOT NULL,
+                ip_hash TEXT,
+                region TEXT,
+                ua TEXT
+            )
+        ''')
 
 
 init_db()
@@ -354,13 +365,22 @@ def admin_dashboard():
             (PAGE_SIZE, (page - 1) * PAGE_SIZE),
         ).fetchall()
         shares = conn.execute(
-            "SELECT s.token, s.filename, u.original_name, datetime(s.expires_at, 'localtime') AS expires_local "
+            "SELECT s.token, s.filename, u.original_name, datetime(s.expires_at, 'localtime') AS expires_local, "
+            "(SELECT COUNT(*) FROM share_access a WHERE a.token = s.token AND a.action = 'view') AS views, "
+            "(SELECT COUNT(*) FROM share_access a WHERE a.token = s.token AND a.action = 'download') AS downloads "
             'FROM shares s LEFT JOIN uploads u ON u.filename = s.filename '
             "WHERE s.revoked = 0 AND s.expires_at > datetime('now') ORDER BY s.created_at DESC"
         ).fetchall()
+        accesses = conn.execute(
+            'SELECT a.timestamp, a.action, a.ip_hash, a.region, a.ua, u.original_name, s.filename '
+            'FROM share_access a JOIN shares s ON s.token = a.token '
+            'LEFT JOIN uploads u ON u.filename = s.filename '
+            'ORDER BY a.id DESC LIMIT ?',
+            (PAGE_SIZE,),
+        ).fetchall()
     last_page = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
     return render_template('dashboard.html', rows=rows, page=page, last_page=last_page, total=total,
-                           shares=shares, share_days=SHARE_DAYS, new_token=request.args.get('shared'))
+                           shares=shares, accesses=accesses, share_days=SHARE_DAYS, new_token=request.args.get('shared'))
 
 
 @app.route('/admin/upload', methods=['GET', 'POST'])
@@ -431,9 +451,21 @@ def active_share(token):
     return share
 
 
+def record_access(token, action):
+    """共有リンクの閲覧・保存を記録する（IPは送信時と同じ鍵付きハッシュ）"""
+    ip_addr = client_ip()
+    with db() as conn:
+        conn.execute(
+            'INSERT INTO share_access (token, action, ip_hash, region, ua) VALUES (?, ?, ?, ?, ?)',
+            (token, action, hash_ip(ip_addr), get_region_from_ip(ip_addr),
+             request.headers.get('User-Agent', 'Unknown')[:300]),
+        )
+
+
 @app.route('/s/<token>')
 def view_share(token):
     share = active_share(token)
+    record_access(token, 'view')
     return render_template('share.html', token=token, expires=share['expires_local'])
 
 
@@ -441,6 +473,8 @@ def view_share(token):
 def share_image(token):
     share = active_share(token)
     download = request.args.get('dl') == '1'
+    if download:  # ページ内の画像表示は「閲覧」で記録済みなので、保存ボタンだけ記録する
+        record_access(token, 'download')
     return send_from_directory(app.config['UPLOAD_FOLDER'], share['filename'], as_attachment=download)
 
 

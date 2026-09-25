@@ -16,7 +16,8 @@
         .actions form { margin: 0; }
         .share-form { display: flex; gap: 4px; margin: 0; }
         .notice-ok { background: #d4edda; padding: 10px 14px; border-radius: 4px; }
-        .ua { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .hint { font-size: 0.8em; color: #666; margin: 6px 0 0; }
+        .ua { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     </style>
 </head>
 <body>
@@ -34,7 +35,7 @@
     {% if shares %}
     <div class="table-wrap">
     <table>
-        <tr><th>画像</th><th>共有URL</th><th>有効期限</th><th>閲覧</th><th>保存</th><th></th></tr>
+        <tr><th>画像</th><th>共有URL</th><th>有効期限</th><th>閲覧</th><th>保存</th><th>履歴</th><th></th></tr>
         {% for s in shares %}
         <tr{% if s['token'] == new_token %} style="background:#fffbe6"{% endif %}>
             <td>{{ s['original_name'] or s['filename'] }}</td>
@@ -43,6 +44,7 @@
             <td>{{ s['expires_local'] }} まで</td>
             <td>{{ s['views'] }}回</td>
             <td>{{ s['downloads'] }}回</td>
+            <td><a href="{{ url_for('admin_dashboard', access_token=s['token']) }}#access">この画像</a></td>
             <td>
                 <form method="post" action="{{ url_for('revoke_share', token=s['token']) }}" class="share-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -57,8 +59,10 @@
     <p><small>送信履歴の右端「発行」から、画像ごとに共有リンクを作れます。</small></p>
     {% endif %}
 
-    <h3 id="access">共有リンクの閲覧・保存履歴（最新{{ accesses|length }}件）</h3>
+    <h3 id="access">共有リンクの閲覧・保存履歴（最新{{ accesses|length }}件）{% if filter_name %} — 「{{ filter_name }}」のみ{% endif %}</h3>
+    {% if filter_name %}<p class="hint"><a href="{{ url_for('admin_dashboard') }}#access">&laquo; すべての履歴に戻る</a></p>{% endif %}
     {% if accesses %}
+    <p class="hint">🗺 は登録上のおおよその地域の中心を指すもので、閲覧者の実際の所在地ではありません。</p>
     <div class="table-wrap">
     <table>
         <tr><th>日時</th><th>操作</th><th>画像</th><th>閲覧者ID</th><th>地域</th><th>機種(UA)</th></tr>
@@ -68,12 +72,14 @@
             <td>{% if a['action'] == 'download' %}<span class="host-badge">保存</span>{% else %}<span class="guest-badge">閲覧</span>{% endif %}</td>
             <td>{{ a['original_name'] or a['filename'] }}</td>
             <td><code>{{ a['ip_hash'] or '-' }}</code></td>
-            <td>{{ a['region'] }}</td>
-            <td class="ua" title="{{ a['ua'] }}"><small>{{ a['ua'] }}</small></td>
+            <td>{% set mu = maps_url(a['lat'], a['lon']) %}{% if mu %}<a href="{{ mu }}" target="_blank" rel="noopener noreferrer">{{ a['region'] }} 🗺</a>{% else %}{{ a['region'] }}{% endif %}</td>
+            <td class="ua" title="{{ a['ua'] }}"><small>{{ parse_ua(a['ua']) }}</small></td>
         </tr>
         {% endfor %}
     </table>
     </div>
+    {% elif filter_name %}
+    <p><small>このリンクはまだ開かれていません。</small></p>
     {% else %}
     <p><small>まだ共有リンクは開かれていません。</small></p>
     {% endif %}
@@ -88,8 +94,8 @@
             <td>{% if row['is_host'] %}<span class="host-badge">HOST</span>{% else %}<span class="guest-badge">GUEST</span>{% endif %}</td>
             <td><code>{{ row['ip_hash'] or '-' }}</code></td>
             <td><a href="{{ url_for('download_file', filename=row['filename']) }}" title="{{ row['filename'] }}">{{ row['original_name'] or row['filename'] }}</a></td>
-            <td>{{ row['region'] }}</td>
-            <td class="ua" title="{{ row['ua'] }}"><small>{{ row['ua'] }}</small></td>
+            <td>{% set mu = maps_url(row['lat'], row['lon']) %}{% if mu %}<a href="{{ mu }}" target="_blank" rel="noopener noreferrer">{{ row['region'] }} 🗺</a>{% else %}{{ row['region'] }}{% endif %}</td>
+            <td class="ua" title="{{ row['ua'] }}"><small>{{ parse_ua(row['ua']) }}</small></td>
             <td><small>{{ row['network'] or 'N/A' }}</small></td>
             <td>
                 <form class="share-form" method="post" action="{{ url_for('create_share') }}">

@@ -129,16 +129,24 @@ def init_db():
                 ua TEXT
             )
         ''')
+        # 既存DBへの列追加（地図リンク用のおおよその座標）
+        for table in ('uploads', 'share_access'):
+            existing = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+            for col in ('lat', 'lon'):
+                if col not in existing:
+                    conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} REAL')
 
 
 init_db()
 
 
 def record_upload(**fields):
+    fields.setdefault('lat', None)
+    fields.setdefault('lon', None)
     with db() as conn:
         conn.execute(
-            'INSERT INTO uploads (is_host, ip_hash, region, ua, network, original_name, filename) '
-            'VALUES (:is_host, :ip_hash, :region, :ua, :network, :original_name, :filename)',
+            'INSERT INTO uploads (is_host, ip_hash, region, ua, network, original_name, filename, lat, lon) '
+            'VALUES (:is_host, :ip_hash, :region, :ua, :network, :original_name, :filename, :lat, :lon)',
             fields,
         )
 
@@ -154,30 +162,88 @@ _geoip_reader = None
 _geoip_lock = threading.Lock()
 
 
-def get_region_from_ip(ip_address):
-    """ローカルの GeoLite2 DB から地域情報を取得する（DB未配置なら「GeoIP未設定」）"""
+def geo_lookup(ip_address):
+    """ローカルの GeoLite2 DB から地域・おおよその座標を取得する。
+    返り値: {'region': str, 'lat': float|None, 'lon': float|None, 'radius': int|None}
+    座標・半径は市区町村レベルの概算で、個人の正確な所在地ではない。"""
     global _geoip_reader
+    none = {'region': None, 'lat': None, 'lon': None, 'radius': None}
     try:
         if ipaddress.ip_address(ip_address).is_private:
-            return 'プライベートIP'
+            return {**none, 'region': 'プライベートIP'}
     except ValueError:
-        return '不正なIP'
+        return {**none, 'region': '不正なIP'}
     try:
         with _geoip_lock:
             if _geoip_reader is None:
                 if not os.path.exists(GEOIP_DB):
-                    return 'GeoIP未設定'
+                    return {**none, 'region': 'GeoIP未設定'}
                 import geoip2.database
                 _geoip_reader = geoip2.database.Reader(GEOIP_DB)
         r = _geoip_reader.city(ip_address)
-        return ' '.join(filter(None, [
+        region = ' '.join(filter(None, [
             r.country.names.get('ja') or r.country.name,
             r.subdivisions.most_specific.names.get('ja') or r.subdivisions.most_specific.name,
             r.city.names.get('ja') or r.city.name,
         ])) or '不明'
+        loc = r.location
+        return {'region': region, 'lat': loc.latitude, 'lon': loc.longitude,
+                'radius': loc.accuracy_radius}
     except Exception as e:
         app.logger.warning('GeoIP lookup failed: %r', e)
-        return '取得失敗'
+        return {**none, 'region': '取得失敗'}
+
+
+def get_region_from_ip(ip_address):
+    """地域名の文字列だけが必要なとき用の簡易版"""
+    return geo_lookup(ip_address)['region']
+
+
+# リンクプレビュー用に自動アクセスしてくる bot 類（実際の閲覧者と区別するため）
+_PREVIEW_BOTS = ('bot', 'crawler', 'spider', 'slurp', 'facebookexternalhit', 'twitterbot',
+                 'slackbot', 'discordbot', 'skypeuripreview', 'whatsapp', 'line/', 'embedly',
+                 'preview', 'pinterest', 'telegrambot')
+
+
+def parse_ua(ua):
+    """User-Agent を「ブラウザ / OS」の短い表記にする。判別できなければ簡単なラベル。"""
+    if not ua or ua == 'Unknown':
+        return '不明'
+    low = ua.lower()
+    if any(b in low for b in _PREVIEW_BOTS):
+        return 'リンクプレビュー/bot'
+    if 'edg' in low:
+        browser = 'Edge'
+    elif 'firefox' in low or 'fxios' in low:
+        browser = 'Firefox'
+    elif 'crios' in low or 'chromium' in low or 'chrome' in low:
+        browser = 'Chrome'
+    elif 'safari' in low and 'version/' in low:
+        browser = 'Safari'
+    else:
+        browser = 'その他'
+    if 'windows nt' in low:
+        os_name = 'Windows'
+    elif 'iphone' in low:
+        os_name = 'iPhone'
+    elif 'ipad' in low:
+        os_name = 'iPad'
+    elif 'android' in low:
+        os_name = 'Android'
+    elif 'mac os x' in low or 'macintosh' in low:
+        os_name = 'Mac'
+    elif 'linux' in low:
+        os_name = 'Linux'
+    else:
+        os_name = '不明'
+    return f'{browser} / {os_name}'
+
+
+def maps_url(lat, lon):
+    """おおよその地域中心を指す地図リンク。座標がなければ None。"""
+    if lat is None or lon is None:
+        return None
+    return f'https://www.google.com/maps?q={lat},{lon}'
 
 
 def parse_network_info(form):
@@ -251,6 +317,8 @@ def csrf_token():
 
 
 app.jinja_env.globals['csrf_token'] = csrf_token
+app.jinja_env.globals['parse_ua'] = parse_ua
+app.jinja_env.globals['maps_url'] = maps_url
 
 
 def check_csrf():
@@ -311,14 +379,16 @@ def guest_upload():
     if error:
         return error, 400
 
+    geo = geo_lookup(ip_addr)
     record_upload(
         is_host=0,
         ip_hash=hash_ip(ip_addr),
-        region=get_region_from_ip(ip_addr),
+        region=geo['region'],
         ua=request.headers.get('User-Agent', 'Unknown')[:300],
         network=parse_network_info(request.form),
         original_name=file.filename[:100],
         filename=stored_name,
+        lat=geo['lat'], lon=geo['lon'],
     )
     return '送信が完了しました。ご協力ありがとうございます。'
 
@@ -357,10 +427,11 @@ def admin_logout():
 @admin_required
 def admin_dashboard():
     page = max(request.args.get('page', 1, type=int), 1)
+    access_token = request.args.get('access_token')
     with db() as conn:
         total = conn.execute('SELECT COUNT(*) FROM uploads').fetchone()[0]
         rows = conn.execute(
-            'SELECT timestamp, is_host, ip_hash, region, ua, network, original_name, filename '
+            'SELECT timestamp, is_host, ip_hash, region, ua, network, original_name, filename, lat, lon '
             'FROM uploads ORDER BY id DESC LIMIT ? OFFSET ?',
             (PAGE_SIZE, (page - 1) * PAGE_SIZE),
         ).fetchall()
@@ -371,16 +442,32 @@ def admin_dashboard():
             'FROM shares s LEFT JOIN uploads u ON u.filename = s.filename '
             "WHERE s.revoked = 0 AND s.expires_at > datetime('now') ORDER BY s.created_at DESC"
         ).fetchall()
-        accesses = conn.execute(
-            'SELECT a.timestamp, a.action, a.ip_hash, a.region, a.ua, u.original_name, s.filename '
+        access_sql = (
+            'SELECT a.timestamp, a.action, a.ip_hash, a.region, a.ua, a.lat, a.lon, u.original_name, s.filename '
             'FROM share_access a JOIN shares s ON s.token = a.token '
             'LEFT JOIN uploads u ON u.filename = s.filename '
-            'ORDER BY a.id DESC LIMIT ?',
-            (PAGE_SIZE,),
-        ).fetchall()
+        )
+        params = []
+        if access_token:  # 特定の共有リンクだけに絞り込み
+            access_sql += 'WHERE a.token = ? '
+            params.append(access_token)
+        access_sql += 'ORDER BY a.id DESC LIMIT ?'
+        params.append(PAGE_SIZE)
+        accesses = conn.execute(access_sql, params).fetchall()
+        filter_name = None
+        if access_token:
+            hit = conn.execute(
+                'SELECT u.original_name, s.filename FROM shares s '
+                'LEFT JOIN uploads u ON u.filename = s.filename WHERE s.token = ?',
+                (access_token,),
+            ).fetchone()
+            if hit:
+                filter_name = hit['original_name'] or hit['filename']
     last_page = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
     return render_template('dashboard.html', rows=rows, page=page, last_page=last_page, total=total,
-                           shares=shares, accesses=accesses, share_days=SHARE_DAYS, new_token=request.args.get('shared'))
+                           shares=shares, accesses=accesses, share_days=SHARE_DAYS,
+                           new_token=request.args.get('shared'),
+                           access_token=access_token, filter_name=filter_name)
 
 
 @app.route('/admin/upload', methods=['GET', 'POST'])
@@ -454,11 +541,13 @@ def active_share(token):
 def record_access(token, action):
     """共有リンクの閲覧・保存を記録する（IPは送信時と同じ鍵付きハッシュ）"""
     ip_addr = client_ip()
+    geo = geo_lookup(ip_addr)
     with db() as conn:
         conn.execute(
-            'INSERT INTO share_access (token, action, ip_hash, region, ua) VALUES (?, ?, ?, ?, ?)',
-            (token, action, hash_ip(ip_addr), get_region_from_ip(ip_addr),
-             request.headers.get('User-Agent', 'Unknown')[:300]),
+            'INSERT INTO share_access (token, action, ip_hash, region, ua, lat, lon) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (token, action, hash_ip(ip_addr), geo['region'],
+             request.headers.get('User-Agent', 'Unknown')[:300], geo['lat'], geo['lon']),
         )
 
 

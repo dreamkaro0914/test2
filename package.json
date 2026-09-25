@@ -1,0 +1,17 @@
+{
+  "name": "anon-image-share",
+  "version": "1.0.0",
+  "description": "無料・匿名の画像共有ツール（ホスト配信型）。閲覧者にはプライバシー通知を提示したうえで、標準的なアクセス解析（おおよその地域・機種・接続方法）を記録します。",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.test.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ejs": "^3.1.10",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1"
+  }
+}

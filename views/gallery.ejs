@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>画像共有ギャラリー</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>画像ギャラリー</h1>
+  <span class="muted">匿名・無料でご覧いただけます</span>
+</header>
+
+<div class="notice" role="note">
+  <strong>プライバシーについて：</strong>
+  このページの閲覧時に、アクセス解析のため
+  <em>おおよその地域・お使いの機種/OS/ブラウザ・接続方法</em>を記録します。
+  個人を特定するものではなく、IPアドレスそのものは保存しません。
+</div>
+
+<main class="grid">
+  <% if (!images.length) { %>
+    <p class="empty">まだ画像が投稿されていません。</p>
+  <% } %>
+  <% images.forEach(function (img) { %>
+    <figure class="card">
+      <img loading="lazy" src="/img/<%= img.file %>" alt="<%= img.caption || '共有画像' %>">
+      <% if (img.caption) { %><figcaption><%= img.caption %></figcaption><% } %>
+    </figure>
+  <% }) %>
+</main>
+
+<footer class="foot muted">閲覧専用ページです。</footer>
+</body>
+</html>

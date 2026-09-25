@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ホストログイン</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="login">
+  <h1>ホスト用ログイン</h1>
+  <% if (error) { %><p class="err"><%= error %></p><% } %>
+  <form method="GET" action="/host">
+    <label>管理トークン
+      <input type="password" name="token" autofocus required>
+    </label>
+    <button type="submit">入室</button>
+  </form>
+  <p class="muted">トークンはサーバ起動時のコンソールに表示されます。</p>
+</main>
+</body>
+</html>

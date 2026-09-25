@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>接続者の解析</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>接続者の解析</h1>
+  <nav><a href="/host?token=<%= encodeURIComponent(token) %>">← 管理へ戻る</a></nav>
+</header>
+
+<section class="stats">
+  <div class="stat"><span class="num"><%= total %></span>総アクセス</div>
+  <div class="stat"><span class="num"><%= uniqueVisitors %></span>おおよその訪問者数</div>
+</section>
+
+<% function table(title, rows) { %>
+  <section class="panel">
+    <h2><%= title %></h2>
+    <% if (!rows.length) { %><p class="muted">データなし</p><% } else { %>
+      <table>
+        <% rows.forEach(function (r) { %>
+          <tr><th><%= r[0] %></th><td><%= r[1] %></td></tr>
+        <% }) %>
+      </table>
+    <% } %>
+  </section>
+<% } %>
+
+<% table('地域（おおよそ）', byRegion) %>
+<% table('機種の種別', byDevice) %>
+<% table('OS', byOs) %>
+<% table('ブラウザ', byBrowser) %>
+<% table('通信方法（推定）', byNetwork) %>
+
+<section class="panel">
+  <h2>直近のアクセス（最新100件）</h2>
+  <table class="log">
+    <thead><tr><th>時刻</th><th>地域</th><th>機種</th><th>OS</th><th>ブラウザ</th><th>接続</th></tr></thead>
+    <tbody>
+    <% recent.forEach(function (v) { %>
+      <tr>
+        <td><%= v.ts %></td>
+        <td><%= v.region %></td>
+        <td><%= v.deviceType %></td>
+        <td><%= v.os %></td>
+        <td><%= v.browser %></td>
+        <td><%= v.connection ? (v.connection.network + ' / ' + v.connection.scheme) : '不明' %></td>
+      </tr>
+    <% }) %>
+    </tbody>
+  </table>
+  <p class="muted">IPアドレスそのものは保存していません。訪問者数は匿名化IDによる概算です。</p>
+</section>
+</body>
+</html>

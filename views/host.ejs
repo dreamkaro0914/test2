@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ホスト管理</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>ホスト管理</h1>
+  <nav>
+    <a href="/host/analytics?token=<%= encodeURIComponent(token) %>">接続者の解析</a>
+    <a href="/" target="_blank">公開ページ</a>
+  </nav>
+</header>
+
+<% if (adminTokenHint) { %>
+  <div class="notice">今回の管理トークン: <code><%= adminTokenHint %></code>（環境変数 <code>ADMIN_TOKEN</code> で固定できます）</div>
+<% } %>
+
+<section class="panel">
+  <h2>画像を配信する</h2>
+  <form method="POST" action="/host/upload" enctype="multipart/form-data">
+    <input type="hidden" name="token" value="<%= token %>">
+    <input type="file" name="images" accept="image/*" multiple required>
+    <input type="text" name="caption" placeholder="キャプション（任意）" maxlength="200">
+    <button type="submit">アップロードして公開</button>
+  </form>
+  <p class="muted">対応形式: JPEG / PNG / GIF / WebP / AVIF、1ファイル最大10MB。</p>
+</section>
+
+<section class="panel">
+  <h2>公開中の画像（<%= images.length %>件）</h2>
+  <div class="grid">
+    <% images.forEach(function (img) { %>
+      <figure class="card">
+        <img loading="lazy" src="/img/<%= img.file %>" alt="">
+        <% if (img.caption) { %><figcaption><%= img.caption %></figcaption><% } %>
+        <form method="POST" action="/host/delete">
+          <input type="hidden" name="token" value="<%= token %>">
+          <input type="hidden" name="id" value="<%= img.id %>">
+          <button class="danger" type="submit">削除</button>
+        </form>
+      </figure>
+    <% }) %>
+  </div>
+</section>
+</body>
+</html>

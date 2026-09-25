@@ -1,22 +1,65 @@
+import functools
+import hmac
 import io
 import ipaddress
-import logging
 import os
 import re
+import secrets
+import sqlite3
+import sys
 import threading
 import time
 import uuid
 from collections import defaultdict, deque
+from datetime import timedelta
+from hashlib import sha256
 
-from flask import Flask, request, render_template
+from flask import (Flask, abort, flash, redirect, render_template, request,
+                   send_from_directory, session, url_for)
 from PIL import Image, UnidentifiedImageError
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import check_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def load_env_file(path):
+    """KEY=VALUE 形式の .env を読み込む（$ などを展開しない。既存の環境変数を優先）"""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('\'"'))
+
+
+load_env_file(os.path.join(BASE_DIR, '.env'))
+
+# 必須の秘密情報。未設定なら起動しない（既定値で動かすと第三者にログイン・復元される）
+REQUIRED_ENV = ('FLASK_SECRET_KEY', 'ADMIN_PASS_HASH', 'IP_HASH_KEY')
+_missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
+if _missing:
+    sys.exit(f"必須の環境変数が未設定です: {', '.join(_missing)}（python gen_env.py で .env を作成してください）")
+
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = os.environ.get('UPLOAD_FOLDER', os.path.join(BASE_DIR, 'uploads'))
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 1リクエスト最大16MB
+app.secret_key = os.environ['FLASK_SECRET_KEY']
+app.config.update(
+    UPLOAD_FOLDER=os.environ.get('UPLOAD_FOLDER', os.path.join(BASE_DIR, 'uploads')),
+    MAX_CONTENT_LENGTH=16 * 1024 * 1024,  # 1リクエスト最大16MB
+    SESSION_COOKIE_HTTPONLY=True,
+    # HTTPS 前提。ローカルの HTTP で試すときだけ COOKIE_SECURE=0 を設定する
+    SESSION_COOKIE_SECURE=os.environ.get('COOKIE_SECURE', '1') != '0',
+    SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+)
+
+ADMIN_USERNAME = os.environ.get('ADMIN_USER', 'admin')
+ADMIN_PASSWORD_HASH = os.environ['ADMIN_PASS_HASH']
+IP_HASH_KEY = os.environ['IP_HASH_KEY'].encode()
+DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'metadata.db'))
 
 # 信頼するリバースプロキシの段数（Nginx 1段なら 1）。
 # 0 のときは X-Forwarded-For を一切信用せず、直接の接続元IPのみを使う。
@@ -27,31 +70,69 @@ if TRUSTED_PROXIES > 0:
 # GeoIP はローカルDB（MaxMind GeoLite2-City.mmdb）で引く。外部APIへIPを送信しない。
 GEOIP_DB = os.environ.get('GEOIP_DB', os.path.join(BASE_DIR, 'GeoLite2-City.mmdb'))
 
-# 簡易レート制限（同一IPから WINDOW 秒あたり LIMIT 件まで）
-RATE_LIMIT = int(os.environ.get('RATE_LIMIT', '10'))
-RATE_WINDOW = int(os.environ.get('RATE_WINDOW', '600'))
+# 簡易レート制限（同一IPから window 秒あたり limit 件まで）
+UPLOAD_LIMIT = (int(os.environ.get('RATE_LIMIT', '10')), int(os.environ.get('RATE_WINDOW', '600')))
+LOGIN_LIMIT = (5, 900)
 
 # 中身の実フォーマット → 保存時の拡張子
 ALLOWED_FORMATS = {'PNG': '.png', 'JPEG': '.jpg', 'GIF': '.gif', 'WEBP': '.webp'}
 ALLOWED_EFFECTIVE_TYPES = {'slow-2g', '2g', '3g', '4g'}
+STORED_NAME_RE = re.compile(r'^(guest|host)_\d{14}_[0-9a-f]{32}\.(png|jpg|gif|webp)$')
+PAGE_SIZE = 100
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# ログ設定（ホストが確認するための記録）
-upload_logger = logging.getLogger('upload_history')
-upload_logger.setLevel(logging.INFO)
-_handler = logging.FileHandler(
-    os.environ.get('UPLOAD_LOG', os.path.join(BASE_DIR, 'upload_history.log')), encoding='utf-8'
-)
-_handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
-upload_logger.addHandler(_handler)
+
+# --- データベース ---
+
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    with db() as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (datetime('now', 'localtime')),
+                is_host INTEGER NOT NULL,
+                ip_hash TEXT,
+                region TEXT,
+                ua TEXT,
+                network TEXT,
+                original_name TEXT,
+                filename TEXT NOT NULL
+            )
+        ''')
+
+
+init_db()
+
+
+def record_upload(**fields):
+    with db() as conn:
+        conn.execute(
+            'INSERT INTO uploads (is_host, ip_hash, region, ua, network, original_name, filename) '
+            'VALUES (:is_host, :ip_hash, :region, :ua, :network, :original_name, :filename)',
+            fields,
+        )
+
+
+# --- ヘルパー ---
+
+def hash_ip(ip_address):
+    """IPを鍵付きハッシュ（HMAC）で仮名化する。鍵を知らなければ総当たりで元のIPに戻せない"""
+    return hmac.new(IP_HASH_KEY, ip_address.encode(), sha256).hexdigest()[:16]
+
 
 _geoip_reader = None
 _geoip_lock = threading.Lock()
 
 
 def get_region_from_ip(ip_address):
-    """ローカルの GeoLite2 DB から地域情報を取得する（DB未配置なら「未設定」）"""
+    """ローカルの GeoLite2 DB から地域情報を取得する（DB未配置なら「GeoIP未設定」）"""
     global _geoip_reader
     try:
         if ipaddress.ip_address(ip_address).is_private:
@@ -72,16 +153,8 @@ def get_region_from_ip(ip_address):
             r.city.names.get('ja') or r.city.name,
         ])) or '不明'
     except Exception as e:
-        upload_logger.warning('GeoIP lookup failed: %s', sanitize(repr(e)))
+        app.logger.warning('GeoIP lookup failed: %r', e)
         return '取得失敗'
-
-
-_CTRL_CHARS = re.compile(r'[\x00-\x1f\x7f]')
-
-
-def sanitize(value, max_len=300):
-    """ログ偽造を防ぐため制御文字（改行等）と区切り文字を除去し、長さを制限する"""
-    return _CTRL_CHARS.sub(' ', str(value)).replace('|', '/')[:max_len]
 
 
 def parse_network_info(form):
@@ -103,14 +176,14 @@ _rate_hits = defaultdict(deque)
 _rate_lock = threading.Lock()
 
 
-def is_rate_limited(ip_addr):
+def is_rate_limited(bucket, limit, window):
     """プロセス内メモリで判定する簡易版。複数ワーカー運用時は Flask-Limiter + Redis 等に置き換えること"""
     now = time.monotonic()
     with _rate_lock:
-        hits = _rate_hits[ip_addr]
-        while hits and now - hits[0] > RATE_WINDOW:
+        hits = _rate_hits[bucket]
+        while hits and now - hits[0] > window:
             hits.popleft()
-        if len(hits) >= RATE_LIMIT:
+        if len(hits) >= limit:
             return True
         hits.append(now)
         return False
@@ -126,49 +199,173 @@ def detect_image_format(data):
         return None
 
 
+def save_image(file, prefix):
+    """検証済みの画像をサーバー生成の名前で保存する。(保存名, エラーメッセージ) を返す"""
+    if file is None or file.filename == '':
+        return None, 'ファイルが選択されていません。'
+    data = file.read()
+    ext = detect_image_format(data)
+    if ext is None:
+        return None, '画像ファイル（PNG / JPEG / GIF / WebP）のみアップロード可能です。'
+    # 元のファイル名は使わない（パストラバーサル対策）
+    stored_name = f"{prefix}_{time.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}{ext}"
+    with open(os.path.join(app.config['UPLOAD_FOLDER'], stored_name), 'xb') as f:
+        f.write(data)
+    return stored_name, None
+
+
+def client_ip():
+    # TRUSTED_PROXIES 設定時のみ ProxyFix が X-Forwarded-For を反映済み
+    return request.remote_addr or 'unknown'
+
+
+# --- CSRF 対策（管理画面のフォーム） ---
+
+def csrf_token():
+    if '_csrf' not in session:
+        session['_csrf'] = secrets.token_urlsafe(32)
+    return session['_csrf']
+
+
+app.jinja_env.globals['csrf_token'] = csrf_token
+
+
+def check_csrf():
+    token = session.get('_csrf')
+    if not token or not hmac.compare_digest(token, request.form.get('csrf_token', '')):
+        abort(400, 'CSRFトークンが不正です。ページを再読み込みしてやり直してください。')
+
+
+def admin_required(f):
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('admin_logged_in'):
+            return redirect(url_for('admin_login'))
+        if request.method == 'POST':
+            check_csrf()
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+# --- セキュリティヘッダー ---
+
+@app.after_request
+def set_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    # インラインスクリプトは禁止（JS は static/ から読み込む）
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+    )
+    if request.path.startswith('/admin'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 @app.errorhandler(413)
 def too_large(_e):
     return 'ファイルサイズは16MBまでです。', 413
 
 
+# ==============================
+# ゲスト用ルート（送信のみ）
+# ==============================
+
 @app.route('/', methods=['GET', 'POST'])
-def upload_file():
+def guest_upload():
     if request.method == 'GET':
         return render_template('index.html')
 
-    # 接続元IP（TRUSTED_PROXIES 設定時のみ ProxyFix が X-Forwarded-For を反映済み）
-    ip_addr = request.remote_addr or 'Unknown'
-
-    if is_rate_limited(ip_addr):
+    ip_addr = client_ip()
+    if is_rate_limited(('upload', ip_addr), *UPLOAD_LIMIT):
         return '送信回数が多すぎます。しばらくしてから再度お試しください。', 429
 
     file = request.files.get('file')
-    if file is None or file.filename == '':
-        return 'ファイルが選択されていません。', 400
+    stored_name, error = save_image(file, 'guest')
+    if error:
+        return error, 400
 
-    data = file.read()
-    ext = detect_image_format(data)
-    if ext is None:
-        return '画像ファイル（PNG / JPEG / GIF / WebP）のみアップロード可能です。', 400
-
-    # 保存名はサーバー側で生成（元のファイル名は使わない＝パストラバーサル対策）
-    safe_filename = f"{time.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}{ext}"
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
-    with open(filepath, 'xb') as f:
-        f.write(data)
-
-    log_data = ' | '.join([
-        f'File: {safe_filename}',
-        f'Original: {sanitize(file.filename, 100)}',
-        f'IP: {sanitize(ip_addr, 64)}',
-        f'Region: {get_region_from_ip(ip_addr)}',
-        f"Device(UA): {sanitize(request.headers.get('User-Agent', 'Unknown'))}",
-        f'Network: {parse_network_info(request.form)}',
-    ])
-    upload_logger.info(log_data)
-    print(f'[NEW UPLOAD] {log_data}')  # コンソールにも出力
-
+    record_upload(
+        is_host=0,
+        ip_hash=hash_ip(ip_addr),
+        region=get_region_from_ip(ip_addr),
+        ua=request.headers.get('User-Agent', 'Unknown')[:300],
+        network=parse_network_info(request.form),
+        original_name=file.filename[:100],
+        filename=stored_name,
+    )
     return '送信が完了しました。ご協力ありがとうございます。'
+
+
+# ==============================
+# ホスト用ルート（認証・管理・送信）
+# ==============================
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        check_csrf()
+        if is_rate_limited(('login', client_ip()), *LOGIN_LIMIT):
+            flash('ログイン試行回数が多すぎます。15分後に再度お試しください。')
+            return render_template('login.html'), 429
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+        user_ok = hmac.compare_digest(username.encode(), ADMIN_USERNAME.encode())
+        if check_password_hash(ADMIN_PASSWORD_HASH, password) and user_ok:
+            session.clear()  # ログイン前のセッションを引き継がない
+            session.permanent = True
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin_dashboard'))
+        flash('認証に失敗しました。')
+    return render_template('login.html')
+
+
+@app.route('/admin/logout', methods=['POST'])
+@admin_required
+def admin_logout():
+    session.clear()
+    return redirect(url_for('admin_login'))
+
+
+@app.route('/admin/dashboard')
+@admin_required
+def admin_dashboard():
+    page = max(request.args.get('page', 1, type=int), 1)
+    with db() as conn:
+        total = conn.execute('SELECT COUNT(*) FROM uploads').fetchone()[0]
+        rows = conn.execute(
+            'SELECT timestamp, is_host, ip_hash, region, ua, network, original_name, filename '
+            'FROM uploads ORDER BY id DESC LIMIT ? OFFSET ?',
+            (PAGE_SIZE, (page - 1) * PAGE_SIZE),
+        ).fetchall()
+    last_page = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
+    return render_template('dashboard.html', rows=rows, page=page, last_page=last_page, total=total)
+
+
+@app.route('/admin/upload', methods=['GET', 'POST'])
+@admin_required
+def admin_upload():
+    if request.method == 'POST':
+        file = request.files.get('file')
+        stored_name, error = save_image(file, 'host')
+        if error:
+            return error, 400
+        record_upload(
+            is_host=1, ip_hash=None, region='Local',
+            ua=request.headers.get('User-Agent', 'Unknown')[:300],
+            network='Host Direct', original_name=file.filename[:100], filename=stored_name,
+        )
+        return redirect(url_for('admin_dashboard'))
+    return render_template('admin_upload.html')
+
+
+@app.route('/admin/files/<filename>')
+@admin_required
+def download_file(filename):
+    if not STORED_NAME_RE.match(filename):
+        abort(404)
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
 
 
 if __name__ == '__main__':

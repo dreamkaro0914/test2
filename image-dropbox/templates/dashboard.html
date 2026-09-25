@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Host Dashboard</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 0.9em; }
+        th { background: #f4f4f4; }
+        .host-badge { background: #d4edda; color: #155724; padding: 2px 5px; border-radius: 3px; font-size: 0.8em; }
+        .guest-badge { background: #fff3cd; color: #856404; padding: 2px 5px; border-radius: 3px; font-size: 0.8em; }
+        .actions { display: flex; gap: 15px; align-items: center; margin-bottom: 20px; }
+        .actions form { margin: 0; }
+        .ua { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <h2>ホスト管理ダッシュボード</h2>
+    <div class="actions">
+        <a href="{{ url_for('admin_upload') }}">[ホストから画像を送信]</a>
+        <form method="post" action="{{ url_for('admin_logout') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit">ログアウト</button>
+        </form>
+    </div>
+
+    <h3>送信履歴・メタデータ一覧（全{{ total }}件）</h3>
+    <div class="table-wrap">
+    <table>
+        <tr><th>日時</th><th>送信元</th><th>送信者ID</th><th>ファイル</th><th>地域</th><th>機種(UA)</th><th>回線</th></tr>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row['timestamp'] }}</td>
+            <td>{% if row['is_host'] %}<span class="host-badge">HOST</span>{% else %}<span class="guest-badge">GUEST</span>{% endif %}</td>
+            <td><code>{{ row['ip_hash'] or '-' }}</code></td>
+            <td><a href="{{ url_for('download_file', filename=row['filename']) }}" title="{{ row['filename'] }}">{{ row['original_name'] or row['filename'] }}</a></td>
+            <td>{{ row['region'] }}</td>
+            <td class="ua" title="{{ row['ua'] }}"><small>{{ row['ua'] }}</small></td>
+            <td><small>{{ row['network'] or 'N/A' }}</small></td>
+        </tr>
+        {% endfor %}
+    </table>
+    </div>
+
+    {% if last_page > 1 %}
+    <p>
+        {% if page > 1 %}<a href="{{ url_for('admin_dashboard', page=page - 1) }}">&laquo; 前へ</a>{% endif %}
+        {{ page }} / {{ last_page }}
+        {% if page < last_page %}<a href="{{ url_for('admin_dashboard', page=page + 1) }}">次へ &raquo;</a>{% endif %}
+    </p>
+    {% endif %}
+</body>
+</html>

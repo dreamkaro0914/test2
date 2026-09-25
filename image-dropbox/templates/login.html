@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Host Login</title>
+    <style>
+        body { font-family: sans-serif; max-width: 300px; margin: 100px auto; padding: 0 16px; }
+        .error { color: #c00; }
+    </style>
+</head>
+<body>
+    <h2>ホスト管理ログイン</h2>
+    {% with messages = get_flashed_messages() %}{% if messages %}<p class="error">{{ messages[0] }}</p>{% endif %}{% endwith %}
+    <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="text" name="username" placeholder="Username" autocomplete="username" required><br><br>
+        <input type="password" name="password" placeholder="Password" autocomplete="current-password" required><br><br>
+        <button type="submit">ログイン</button>
+    </form>
+</body>
+</html>

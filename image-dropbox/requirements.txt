@@ -1,4 +1,4 @@
-flask>=3.0
-pillow>=10.0
+flask==3.1.3
+pillow==12.3.0
 # 任意: 地域情報を取得する場合（GeoLite2-City.mmdb を別途 MaxMind から入手して配置）
-geoip2>=4.8
+# geoip2>=4.8

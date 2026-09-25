@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Host Upload</title>
+    <style>
+        body { font-family: sans-serif; max-width: 500px; margin: 50px auto; padding: 0 16px; }
+    </style>
+</head>
+<body>
+    <h2>ホストから画像を送信</h2>
+    <form method="post" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="file" name="file" accept="image/png,image/jpeg,image/gif,image/webp" required><br><br>
+        <button type="submit">送信（アップロード）する</button>
+    </form>
+    <br><a href="{{ url_for('admin_dashboard') }}">ダッシュボードに戻る</a>
+</body>
+</html>
